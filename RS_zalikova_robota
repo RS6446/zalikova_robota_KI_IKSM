@@ -1,0 +1,254 @@
+import streamlit as st
+import pandas as pd
+import random
+import csv
+import os
+from dataclasses import dataclass
+from typing import List, Literal
+from abc import ABC, abstractmethod
+
+#Класи, студенти та співробітники
+@dataclass
+class Person:
+    surname: str
+    name: str
+    patronymic: str
+
+    @property
+    def full_name(self) -> str: #Type Hints як зазначено в ТЗ
+        return f"{self.surname} {self.name} {self.patronymic}"
+
+
+@dataclass
+class Student(Person):
+    birth_year: int
+    gender: Literal['M', 'F']
+    average_score: float
+
+class SchoolClass:
+    def __init__(self, grade: int, letter: str):
+        self.grade = grade
+        self.letter = letter
+        self.students: List[Student] = []
+
+    def add_student(self, student: Student):
+        self.students.append(student)
+
+    def promote(self):
+        self.grade += 1
+
+    @property
+    def name(self):
+        return f"{self.grade}-{self.letter}"
+
+
+# Співробітники
+@dataclass
+class Employee(Person, ABC):
+    base_salary: float
+
+    @abstractmethod
+    def calculate_salary(self) -> float: pass
+
+
+@dataclass
+class Director(Employee):
+    pedagogical_experience: int
+    management_experience: int
+
+    def calculate_salary(self) -> float:
+        return self.base_salary * (self.pedagogical_experience / 50) + (self.management_experience * 500)
+
+
+@dataclass
+class Teacher(Employee):
+    pedagogical_experience: int
+
+    def calculate_salary(self) -> float:
+        return self.base_salary * (self.pedagogical_experience / 30)
+
+
+@dataclass
+class Security(Employee):
+    general_experience: int
+
+    def calculate_salary(self) -> float:
+        return self.base_salary + (self.general_experience * 250)
+
+# 2 - Функції
+def generate_csv_if_not_exists():
+    if os.path.exists("students.csv"):
+        return
+
+    first_names_m = ["Олександр", "Дмитро", "Максим", "Артем", "Іван"]
+    first_names_f = ["Анна", "Марія", "Софія", "Єва", "Вікторія"]
+    surnames = ["Шевченко", "Коваленко", "Бондаренко", "Петренко", "Кравченко"]
+
+    data_rows = []
+    for grade in range(1, 12):
+        for letter in ['А', 'Б']:
+            num_students = random.randint(15, 25)
+            for _ in range(num_students):
+                gender = random.choice(['M', 'F'])
+                name = random.choice(first_names_m) if gender == 'M' else random.choice(first_names_f)
+                surname = random.choice(surnames)
+                birth_year = 2024 - grade - 6  # Приблизний рік
+                avg_score = round(random.uniform(5.0, 12.0), 1)
+
+                data_rows.append({
+                    "grade": grade, "letter": letter, "surname": surname, "name": name,
+                    "patronymic": "Іванович", "birth_year": birth_year, "gender": gender, "average_score": avg_score
+                })
+
+    with open("students.csv", "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=data_rows[0].keys())
+        writer.writeheader()
+        writer.writerows(data_rows)
+
+
+def load_school_data() -> List[SchoolClass]:
+    classes_list = []
+    class_map = {}
+
+    with open("students.csv", "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            g_id = f"{row['grade']}-{row['letter']}"
+            if g_id not in class_map:
+                new_class = SchoolClass(int(row['grade']), row['letter'])
+                classes_list.append(new_class)
+                class_map[g_id] = new_class
+
+            student = Student(
+                surname=row['surname'], name=row['name'], patronymic=row['patronymic'],
+                birth_year=int(row['birth_year']), gender=row['gender'], average_score=float(row['average_score'])
+            )
+            class_map[g_id].add_student(student)
+    return classes_list
+
+# 3) STREAMLIT ІНТЕРФЕЙС
+st.set_page_config(page_title="Система керування школою", layout="wide")
+st.title("Система керування школою 'Оптіма'!")
+
+generate_csv_if_not_exists() # - процедура генерації даних при першому запуску
+
+# Використовуємо Session State, щоб зберігати стан класів між натисканнями кнопок
+if 'school_classes' not in st.session_state:
+    st.session_state['school_classes'] = load_school_data()
+    st.session_state['year_offset'] = 0
+
+# Створюємо вкладки для двох сценаріїв
+tab1, tab2 = st.tabs(["Статистика та Учні", "Зарплати"])
+
+#Scenario 1: учні та їх статистика
+with tab1:
+    classes = st.session_state['school_classes']
+    # Підготовка даних для DataFrame (для зручної аналітики/метрики)
+    all_students_data = []
+    for c in classes:
+        for s in c.students:
+            all_students_data.append({
+                "Grade": c.grade,
+                "Letter": c.letter,
+                "FullClass": c.name,
+                "Gender": s.gender,
+                "Score": s.average_score,
+                "Year": s.birth_year
+            })
+    df = pd.DataFrame(all_students_data)
+
+    if df.empty:
+        st.warning("У школі немає учнів (можливо, всі випустилися).")
+    else:
+        st.subheader("Загальна статистика")
+        col1, col2, col3, col4 = st.columns(4)
+        total_students = len(df)
+        boys = len(df[df['Gender'] == 'M'])
+        girls = len(df[df['Gender'] == 'F'])
+        col1.metric("Всього учнів", total_students)
+        col2.metric("Хлопці / Дівчата", f"{boys} / {girls}",
+        help=f"{boys / total_students:.1%} / {girls / total_students:.1%}")
+        col3.metric("Середній бал по школі", f"{df['Score'].mean():.2f}")
+        col4.metric("Кількість класів", len(classes))
+
+        # наш max/min
+        class_counts = df['FullClass'].value_counts()
+        st.info(f"Найбільший клас: **{class_counts.idxmax()} ({class_counts.max()} учнів) | "
+                f"Найменший клас: **{class_counts.idxmin()} ({class_counts.min()} учнів)")
+
+        st.divider()
+
+        #Графіки
+        st.subheader("Візуалізація")
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.write("Розподіл учнів по паралелях") #Роблю групування по класам
+            grade_counts = df['Grade'].value_counts().sort_index()
+            st.bar_chart(grade_counts)
+
+            st.write("Середня кількість учнів по вертикалях (А, Б...)")
+            vert_counts = df.groupby('Letter').size() / df['Letter'].nunique()  #спрощена форма
+            # Точніше кажучи: середня кількість учнів у класах з літерою А, Б, ..., n
+            avg_vert = df.groupby(['Letter', 'Grade']).size().groupby('Letter').mean()
+            st.bar_chart(avg_vert)
+
+        with c2:
+            st.write("Кількість учнів за роком народження")
+            year_counts = df['Year'].value_counts().sort_index()
+            st.line_chart(year_counts)
+            st.write("Залежність середньої оцінки від класу")
+            st.scatter_chart(df, x='Grade', y='Score', color='Gender', size=20) # Scatter chart у Streamlit
+
+    st.divider()
+
+    #Мігруємо на рік вперед
+    st.subheader("Керування часом")
+    if st.button("🚀 Перевести школу на наступний рік"):
+        new_classes = []
+        graduated_count = 0
+
+        for c in st.session_state['school_classes']:
+            if c.grade < 11:
+                c.promote()
+                new_classes.append(c)
+            else:
+                graduated_count += 1
+
+        st.session_state['school_classes'] = new_classes
+        st.session_state['year_offset'] += 1
+        st.success(f"Рік завершено! Випущено класів: {graduated_count}. Усі інші переведені.")
+        st.rerun()
+
+    if st.session_state['year_offset'] > 0:
+        st.warning(
+            f"Школа зміщена на {st.session_state['year_offset']} років вперед. 1-х класів зараз немає (за умовою задачі).")
+#Зарплати
+with tab2:
+    st.header("Бухгалтерія та Зарплати")
+    # Створення об'єктів (хардкод!)
+    staff = [
+        Director("Галущенко", "Іван", "Іванович", base_salary=15000, pedagogical_experience=20, management_experience=5),
+        Teacher("Петренко", "Марія", "Петрівна", base_salary=12000, pedagogical_experience=10),
+        Teacher("Кріпка", "Олег", "Васильович", base_salary=12000, pedagogical_experience=5),
+        Security("Бугай", "Сергій", "Олександрович", base_salary=11000, general_experience=8)
+    ]
+    #Розрахунок
+    salary_data = []
+    for p in staff:
+        salary_data.append({
+            "ПІБ": p.full_name,
+            "Посада": type(p).__name__,
+            "Базова ставка": p.base_salary,
+            "Нараховано": round(p.calculate_salary(), 2)
+        })
+    df_salary = pd.DataFrame(salary_data)
+    st.dataframe(df_salary, use_container_width=True) # - таблиця
+    csv_data = df_salary.to_csv(index=False).encode('utf-8') # - csv
+
+    st.download_button(
+        label="Завантажити звіт (CSV)",
+        data=csv_data,
+        file_name="salaries.csv",
+        mime="text/csv",
+    )
